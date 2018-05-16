@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,56 +25,83 @@ spec :: Spec
 spec = -- let batchSizes = [1..10] in -- TODO
   let batchSizes = [1] in
   describe "Dispenser.Clients.Memory" $ forM_ (map BatchSize batchSizes) $ \batchSize -> do
-  context ("with " <> show batchSize) $ do
+  -- context ("with " <> show batchSize) $ do
 
-    context "given a stream with 3 events in it" $ do
-      let testStream = makeTestStream batchSize 3
+  --   context "given a stream with 3 events in it" $ do
+  --     let testStream = makeTestStream batchSize 3
 
-      it "should be able to take the first 2 immediately" $ do
-        src <- snd <$> runResourceT testStream
-        complete <- race testSleep $ do
-          let stream = S.take 2 src
-          xs <- runResourceT (S.fst' <$> S.toList stream)
-          sort (map (unEventNumber . view eventNumber) xs) `shouldBe` [1, 2]
-        complete `shouldBe` Right ()
+  --     it "should be able to take the first 2 immediately" $ do
+  --       src <- snd <$> runResourceT testStream
+  --       complete <- race testSleep $ do
+  --         let stream = S.take 2 src
+  --         xs <- runResourceT (S.fst' <$> S.toList stream)
+  --         sort (map (unEventNumber . view eventNumber) xs) `shouldBe` [1, 2]
+  --       complete `shouldBe` Right ()
 
-      it "should be able to take 5 if two more are posted asynchronously" $ do
-        (conn, stream) <- runResourceT testStream
-        complete <- race testSleep $ do
-          void . forkIO $ do
-            sleep 0.05 >> postTestEvent conn 4
-            sleep 0.05 >> postTestEvent conn 5
-            sleep 0.05 >> postTestEvent conn 6
-          let stream' = S.take 5 stream
-          xs <- runResourceT (S.fst' <$> S.toList stream')
-          map (view eventData) xs `shouldBe` map TestInt [1..5]
-        complete `shouldBe` Right ()
+  --     it "should be able to take 5 if two more are posted asynchronously" $ do
+  --       (conn, stream) <- runResourceT testStream
+  --       complete <- race testSleep $ do
+  --         void . forkIO $ do
+  --           sleep 0.05 >> postTestEvent conn 4
+  --           sleep 0.05 >> postTestEvent conn 5
+  --           sleep 0.05 >> postTestEvent conn 6
+  --         let stream' = S.take 5 stream
+  --         xs <- runResourceT (S.fst' <$> S.toList stream')
+  --         map (view eventData) xs `shouldBe` map TestInt [1..5]
+  --       complete `shouldBe` Right ()
 
-    context "given a stream with 10 events in it" $ do
-      let testStream = makeTestStream batchSize 10
+  --   context "given a stream with 10 events in it" $ do
+  --     let testStream = makeTestStream batchSize 10
 
-      it "should be able to take all 10" $ do
-        complete <- race testSleep $ do
-          stream <- S.take 10 . snd <$> runResourceT testStream
-          xs <- runResourceT (S.fst' <$> S.toList stream)
-          map (unEventNumber . view eventNumber) xs `shouldBe` [1..10]
-          sum (map (unTestInt . view eventData) xs) `shouldBe` 55
-          return ()
-        complete `shouldBe` Right ()
+  --     it "should be able to take all 10" $ do
+  --       complete <- race testSleep $ do
+  --         stream <- S.take 10 . snd <$> runResourceT testStream
+  --         xs <- runResourceT (S.fst' <$> S.toList stream)
+  --         map (unEventNumber . view eventNumber) xs `shouldBe` [1..10]
+  --         sum (map (unTestInt . view eventData) xs) `shouldBe` 55
+  --         return ()
+  --       complete `shouldBe` Right ()
 
-      it "should be able to take 15 if 5 are posted asynchronously" $ do
-        (conn, stream) <- runResourceT testStream
-        complete <- race testSleep $ do
-          void . forkIO $ mapM_ ((sleep 0.05 >>) . postTestEvent conn) [11..15]
-          let stream' = S.take 15 stream
-          xs <- runResourceT (S.fst' <$> S.toList stream')
-          map (view eventData) xs `shouldBe` map TestInt [1..15]
-        complete `shouldBe` Right ()
+  --     it "should be able to take 15 if 5 are posted asynchronously" $ do
+  --       (conn, stream) <- runResourceT testStream
+  --       complete <- race testSleep $ do
+  --         void . forkIO $ mapM_ ((sleep 0.05 >>) . postTestEvent conn) [11..15]
+  --         let stream' = S.take 15 stream
+  --         xs <- runResourceT (S.fst' <$> S.toList stream')
+  --         map (view eventData) xs `shouldBe` map TestInt [1..15]
+  --       complete `shouldBe` Right ()
+
+  context "proper ordering" $ do
+    it "events should be in the right order" $ do
+      let testStream :: MonadResource m
+                     => m (MemConnection TestInt, Stream (Of (Event TestInt)) m r)
+          testStream = makeTestStream batchSize 10
+      complete <- race testSleep $ do
+        putLn "1"
+
+        stream <- snd <$> ( runResourceT testStream
+                            :: (MonadBaseControl IO m, MonadIO m, MonadThrow m)
+                            => m ( MemConnection TestInt
+                                 , Stream (Of (Event TestInt)) (ResourceT m) r
+                                 )
+                          )
+
+        putLn "2"
+        let stream' :: Stream (Of (Event TestInt)) (ResourceT IO) ()
+            stream' = S.take 10 stream
+        putLn "3"
+
+        xs <- runResourceT (S.fst' <$> S.toList stream')
+        map (view eventNumber) xs `shouldBe` map EventNumber [1..10]
+      complete `shouldBe` Right ()
 
 makeTestStream :: (MonadIO m, MonadResource m)
                => BatchSize -> Int
                -> m (MemConnection TestInt, Stream (Of (Event TestInt)) m r)
 makeTestStream batchSize n = do
+  putLn "makeTestStream: 1"
   conn <- liftIO createTestPartition
+  putLn "makeTestStream: 2"
   mapM_ (liftIO . postTestEvent conn) [1..n]
+  putLn "makeTestStream: 3"
   (conn,) <$> fromOne conn batchSize
